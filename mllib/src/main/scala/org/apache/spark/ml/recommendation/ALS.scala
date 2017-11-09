@@ -17,38 +17,37 @@
 
 package org.apache.spark.ml.recommendation
 
-import java.{util => ju}
+import breeze.linalg.*
+import com.github.fommil.netlib.BLAS.{getInstance => blas}
 import java.io.IOException
 import java.util.Locale
-
-import scala.collection.mutable
-import scala.reflect.ClassTag
-import scala.util.{Sorting, Try}
-import scala.util.hashing.byteswap64
-
-import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import java.{util => ju}
 import org.apache.hadoop.fs.Path
-import org.json4s.DefaultFormats
-import org.json4s.JsonDSL._
-
-import org.apache.spark.{Dependency, Partitioner, ShuffleDependency, SparkContext}
 import org.apache.spark.annotation.{DeveloperApi, Since}
 import org.apache.spark.internal.Logging
-import org.apache.spark.ml.{Estimator, Model}
-import org.apache.spark.ml.linalg.BLAS
+import org.apache.spark.ml.linalg.{BLAS, DenseVector}
 import org.apache.spark.ml.param._
 import org.apache.spark.ml.param.shared._
 import org.apache.spark.ml.util._
-import org.apache.spark.mllib.linalg.CholeskyDecomposition
+import org.apache.spark.ml.{Estimator, Model}
+import org.apache.spark.mllib.linalg.{CholeskyDecomposition, DenseMatrix, Matrices, Vectors}
+import org.apache.spark.mllib.linalg.distributed.{BlockMatrix, IndexedRow, RowMatrix}
 import org.apache.spark.mllib.optimization.NNLS
-import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{DataFrame, Dataset}
+import org.apache.spark.rdd.{PairRDDFunctions, RDD}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.{DataFrame, Dataset}
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.util.{BoundedPriorityQueue, Utils}
 import org.apache.spark.util.collection.{OpenHashMap, OpenHashSet, SortDataFormat, Sorter}
 import org.apache.spark.util.random.XORShiftRandom
+import org.apache.spark.util.{BoundedPriorityQueue, Utils}
+import org.apache.spark.{Dependency, Partitioner, ShuffleDependency, SparkContext}
+import org.json4s.DefaultFormats
+import org.json4s.JsonDSL._
+import scala.collection.mutable
+import scala.reflect.ClassTag
+import scala.util.hashing.byteswap64
+import scala.util.{Sorting, Try}
 
 /**
  * Common params for ALS and ALSModel.
@@ -879,12 +878,22 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
             logWarning(s"Cannot delete checkpoint file $file:", e)
         }
       }
+
+    println("Inside custom build Spark")
+
     if (implicitPrefs) {
       for (iter <- 1 to maxIter) {
         userFactors.setName(s"userFactors-$iter").persist(intermediateRDDStorageLevel)
         val previousItemFactors = itemFactors
-        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
+
+        println("Inside implicit prefs")
+        //println(s"iteration #$iter")
+
+        itemFactors = computeFactorsCG(userFactors, previousItemFactors, userInBlocks,
+          userOutBlocks, itemInBlocks, itemOutBlocks, rank, regParam,
           userLocalIndexEncoder, implicitPrefs, alpha, solver)
+        //itemFactors.collect().foreach(_._2.foreach(arr => println(arr.mkString(","))))
+
         previousItemFactors.unpersist()
         itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
         // TODO: Generalize PeriodicGraphCheckpointer and use it here.
@@ -893,14 +902,22 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
           itemFactors.checkpoint() // itemFactors gets materialized in computeFactors
         }
         val previousUserFactors = userFactors
-        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
+
+        //println("****")
+
+        userFactors = computeFactorsCG(itemFactors, previousUserFactors, itemInBlocks,
+          itemOutBlocks, userInBlocks, userOutBlocks, rank, regParam,
           itemLocalIndexEncoder, implicitPrefs, alpha, solver)
+        //userFactors.collect().foreach(_._2.foreach(arr => println(arr.mkString(","))))
+
         if (shouldCheckpoint(iter)) {
           ALS.cleanShuffleDependencies(sc, deps)
           deletePreviousCheckpointFile()
           previousCheckpointFile = itemFactors.getCheckpointFile
         }
         previousUserFactors.unpersist()
+
+        //println("--------")
       }
     } else {
       for (iter <- 0 until maxIter) {
@@ -1404,6 +1421,229 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
     (inBlocks, outBlocks)
   }
 
+  import breeze.linalg.{DenseVector => BDV, DenseMatrix => BDM, _}
+  import breeze.numerics._
+
+
+  // scalastyle:off
+  def computeFactorsCG[ID: ClassTag](
+    srcFactorBlocks: RDD[(Int, FactorBlock)],
+    dstFactorBlocks: RDD[(Int, FactorBlock)],
+    srcInBlocks: RDD[(Int, InBlock[ID])],
+    srcOutBlocks: RDD[(Int, OutBlock)],
+    dstInBlocks: RDD[(Int, InBlock[ID])],
+    dstOutBlocks: RDD[(Int, OutBlock)],
+    rank: Int,
+    regParam: Double,
+    srcEncoder: LocalIndexEncoder,
+    implicitPrefs: Boolean = false,
+    alpha: Double = 1.0,
+    solver: LeastSquaresNESolver)(
+    implicit ord: Ordering[ID]): RDD[(Int, FactorBlock)] = {
+
+    val numSrcBlocks = srcFactorBlocks.partitions.length
+
+    //val YtY = if (implicitPrefs) Some(computeYtY(srcFactorBlocks, rank)) else None
+
+    import org.apache.spark.SparkContext._
+
+//
+//    val thisthing = srcInBlocks.mapValues(_.srcIds)
+//
+//    val thisthing2 = new PairRDDFunctions[Int, Array[ID]](thisthing)
+//
+//    val tmp = thisthing.join(srcFactorBlocks)
+//      .mapPartitions({
+//      items => items.flatMap { case (_, (ids, fact)) => ids.view.zip(fact) }
+//    })
+//
+//    val vecs = tmp.map({
+//      case (id, factorarr) => factorarr
+//    })
+//
+//
+//    val factors = vecs.collect()
+//    val Y = new BDM(factors.length, rank, factors.flatten)
+//    val Yt = Y.t
+//    val YtY = Yt * Y
+
+    //    import org.apache.spark.mllib.linalg.Vector
+//
+//    def buildRow(rowWithIndexes: Iterable[(Long, Double)]): Vector = {
+//      val resArr = new Array[Double](rowWithIndexes.size)
+//      rowWithIndexes.foreach{case (index, value) =>
+//        resArr(index.toInt) = value
+//      }
+//      Vectors.dense(resArr)
+//    }
+//
+//    def rowToTransposedTriplet(row: Vector, rowIndex: Long): Array[(Long, (Long, Double))] = {
+//      val indexedRow = row.toArray.zipWithIndex
+//      indexedRow.map{case (value, colIndex) => (colIndex.toLong, (rowIndex, value))}
+//    }
+//
+//    def transposeRowMatrix(m: RowMatrix): RowMatrix = {
+//      val transposedRowsRDD = m.rows.zipWithIndex.map{
+//        case (row, rowIndex) => rowToTransposedTriplet(row, rowIndex)}
+//          .flatMap(x => x) // now we have triplets (newRowIndex, (newColIndex, value))
+//          .groupByKey
+//          .sortByKey().map(_._2) // sort rows and remove row indexes
+//          .map(buildRow) // restore order of elements in each row and remove column indexes
+//      new RowMatrix(transposedRowsRDD)
+//    }
+//
+//    tmp.partitionBy(new Partitioner() {
+//      override def numPartitions = 1
+//      override def getPartition(key: Any): Int = 0
+//    } )
+//
+//    // materialize partition?
+//    tmp.count()
+//
+//    val vecs = tmp.map({
+//      case (id, factorarr) => Vectors.dense(factorarr.map(_.toDouble))
+//    })
+//
+//
+//    val vecsC = vecs.zipWithIndex().map{
+//      case (row, rowIndex) => rowToTransposedTriplet(row, rowIndex)
+//    }.flatMap(x => x).groupByKey.sortByKey().map(_._2).map(buildRow)
+//
+//    // zip rows and columns together and perform element-wise mult.
+      // https://www.thinkbiganalytics.com/2015/11/23/scalable-matrix-multiplication-using-spark-2/
+//    vecs.zip(vecsC).map({
+//      val partialMatrix
+//      case (row, col) =>
+//    })
+
+//    def multiplyVectors(v1: DenseVector, v2: DenseVector): Double = {
+//      return 2.0
+//    }
+
+    val vecs = srcInBlocks.mapValues(_.srcIds).join(srcFactorBlocks)
+      .mapPartitions({
+        items => items.flatMap { case (_, (ids, fact)) => fact }
+      })
+
+//    val vecs = tmp.map({
+//      case (id, factorarr) => factorarr
+//    })
+
+    val factors = vecs.collect()
+    println(s"Inside custom CGD approach: ${factors.length}")
+    val Y = new BDM(factors.length, rank, factors.flatten)
+    val Yt = Y.t
+    val YtY = Yt * Y
+
+    val srcOut = srcOutBlocks.join(srcFactorBlocks).flatMap {
+      case (srcBlockId, (srcOutBlock, srcFactors)) =>
+        srcOutBlock.view.zipWithIndex.map { case (activeIndices, dstBlockId) =>
+          (dstBlockId, (srcBlockId, activeIndices.map(idx => srcFactors(idx))))
+        }
+    }
+
+    val merged = srcOut.groupByKey(new ALSPartitioner(dstInBlocks.partitions.length))
+
+    dstInBlocks.join(merged).join(dstFactorBlocks).mapValues {
+      case ((InBlock(dstIds, srcPtrs, srcEncodedIndices, ratings), srcFactors), relDstFactors) =>
+
+        // need dstFactors
+//        val sortedDstFactors = new Array[FactorBlock](numSrcBlocks)
+//        relDstFactors.foreach { case (srcBlockId, factors) =>
+//          sortedDstFactors(srcBlockId) = factors
+//        }
+
+        if(dstIds.length != relDstFactors.length){
+          throw new RuntimeException("lekjflekf arggggg.")
+        }
+
+        val sortedSrcFactors = new Array[FactorBlock](numSrcBlocks)
+        srcFactors.foreach { case (srcBlockId, factors) =>
+          sortedSrcFactors(srcBlockId) = factors
+        }
+
+        val m = BDM((7154022.0F, -1357958.9F), (-1357958.9F, 1.5335017E7F))
+        val x2 = BDV(8.728524F, 8.021072F)
+
+        val otheres = m.map(_* -1.0F) * x2
+
+        val dstFactors = new Array[Array[Float]](dstIds.length)
+
+        var j = 0
+        while (j < dstIds.length) {
+
+          val x = new BDV(relDstFactors(j))
+
+          val tmp = YtY.map(_* -1.0F)
+
+          var r: BDV[Float] = YtY.map(_* -1.0F) * x
+
+          var i = srcPtrs(j)
+          while (i < srcPtrs(j + 1)) {
+            val encoded = srcEncodedIndices(i)
+            val blockId = srcEncoder.blockId(encoded)
+            val localIndex = srcEncoder.localIndex(encoded)
+            val srcFactor = sortedSrcFactors(blockId)(localIndex)
+            val rating = ratings(i)
+            val confidence: Float = 1.0F + regParam.toFloat * rating
+            val srcFactorVec = BDV(srcFactor)
+            r += (confidence - (confidence - 1) * (srcFactorVec.dot(x))) * srcFactorVec
+            if(r.exists(v => v.toDouble.isNaN)){
+              throw new RuntimeException("argg nan")
+            }
+            i += 1
+          }
+
+          var p : BDV[Float] = r.copy
+          var rsold: Float = r dot r
+
+          if(rsold.toDouble.isNaN){
+            throw new RuntimeException("arggg rsold")
+          }
+
+          var rsnew: Float = 0.0F
+
+          var srcFactorVec: BDV[Float] = new BDV(x.length)
+          for (it <- 1 to 3) {
+
+            var Ap: BDV[Float] = YtY * p
+            if(Ap.exists(v => v.toDouble.isNaN)){
+              throw new RuntimeException("Ap arggg")
+            }
+
+            i = srcPtrs(j)
+            while (i < srcPtrs(j + 1)) {
+              val encoded = srcEncodedIndices(i)
+              val blockId = srcEncoder.blockId(encoded)
+              val localIndex = srcEncoder.localIndex(encoded)
+              val srcFactor = sortedSrcFactors(blockId)(localIndex)
+              val rating = ratings(i)
+              val confidence: Float = 1.0F + regParam.toFloat * rating
+              srcFactorVec = BDV(srcFactor)
+              Ap += (confidence - 1) * (srcFactorVec dot p) * srcFactorVec
+
+              if(Ap.exists(v => v.toDouble.isNaN)){
+                throw new RuntimeException("Ap arggg")
+              }
+
+              i += 1
+            }
+
+            val alpha: Float = rsold / (p dot Ap)
+            x += p *:* alpha
+            r -= Ap * alpha
+            rsnew = r dot r
+            p = r + (rsnew / rsold) * p
+            rsold = rsnew
+
+          }
+          dstFactors(j) = srcFactorVec.toArray
+          j += 1
+        }
+        dstFactors
+    }
+  }
+
   /**
    * Compute dst factors by constructing and solving least square problems.
    *
@@ -1493,7 +1733,8 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
         factors.foreach(ne.add(_, 0.0))
         ne
       },
-      combOp = (ne1, ne2) => ne1.merge(ne2))
+      combOp = (ne1, ne2) => ne1.merge(ne2)
+    )
   }
 
   /**

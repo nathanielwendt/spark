@@ -412,9 +412,15 @@ class ALSSuite
       .setSeed(0)
     val alpha = als.getAlpha
     val model = als.fit(training.toDF())
+    model.userFactors.collect().foreach(println)
+    model.itemFactors.collect().foreach(println)
+
     val predictions = model.transform(test.toDF()).select("rating", "prediction").rdd.map {
-      case Row(rating: Float, prediction: Float) =>
+      case Row(rating: Float, prediction: Float) => {
+        //println(rating + " " + prediction)
         (rating.toDouble, prediction.toDouble)
+      }
+
     }
     val rmse =
       if (implicitPrefs) {
@@ -438,6 +444,7 @@ class ALSSuite
         }.mean()
         math.sqrt(mse)
       }
+    println(s"Test RMSE is $rmse.")
     logInfo(s"Test RMSE is $rmse.")
     assert(rmse < targetRMSE)
 
@@ -474,6 +481,7 @@ class ALSSuite
   }
 
   test("more blocks than ratings") {
+    println("not here")
     val (training, test) =
       genExplicitTestData(numUsers = 4, numItems = 4, rank = 1)
     testALS(training, test, maxIter = 2, rank = 1, regParam = 1e-4, targetRMSE = 0.002,
@@ -481,6 +489,7 @@ class ALSSuite
   }
 
   test("implicit feedback") {
+    println("here")
     val (training, test) =
       genImplicitTestData(numUsers = 20, numItems = 40, rank = 2, noiseStd = 0.01)
     testALS(training, test, maxIter = 4, rank = 2, regParam = 0.01, implicitPrefs = true,
