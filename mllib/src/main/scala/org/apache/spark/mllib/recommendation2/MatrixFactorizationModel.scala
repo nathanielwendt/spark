@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.mllib.recommendation
+package org.apache.spark.mllib.recommendation2
 
 import java.io.IOException
 import java.lang.{Integer => JavaInteger}
@@ -346,12 +346,12 @@ object MatrixFactorizationModel extends Loader[MatrixFactorizationModel] {
     }
   }
 
-  private[recommendation]
+  private[recommendation2]
   object SaveLoadV1_0 {
 
     private val thisFormatVersion = "1.0"
 
-    private[recommendation]
+    private[recommendation2]
     val thisClassName = "org.apache.spark.mllib.recommendation.MatrixFactorizationModel"
 
     /**

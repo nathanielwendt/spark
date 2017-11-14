@@ -20,7 +20,7 @@ package org.apache.spark.examples.mllib
 
 // $example on$
 import org.apache.spark.mllib.evaluation.{RankingMetrics, RegressionMetrics}
-import org.apache.spark.mllib.recommendation.{ALS, Rating}
+import org.apache.spark.mllib.recommendation2.{ALS, Rating}
 // $example off$
 import org.apache.spark.sql.SparkSession
 

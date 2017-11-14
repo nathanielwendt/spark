@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.mllib.recommendation;
+package org.apache.spark.mllib.recommendation2;
 
 import java.util.ArrayList;
 import java.util.List;

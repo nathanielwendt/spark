@@ -26,8 +26,8 @@ import java.io.Serializable;
 
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.ml.evaluation.RegressionEvaluator;
-import org.apache.spark.ml.recommendation.ALS;
-import org.apache.spark.ml.recommendation.ALSModel;
+import org.apache.spark.ml.recommendationml2.ALS;
+import org.apache.spark.ml.recommendationml2.ALSModel;
 // $example off$
 
 public class JavaALSExample {

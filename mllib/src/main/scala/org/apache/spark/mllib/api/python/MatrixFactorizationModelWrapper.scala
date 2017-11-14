@@ -19,7 +19,7 @@ package org.apache.spark.mllib.api.python
 
 import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.mllib.linalg.Vectors
-import org.apache.spark.mllib.recommendation.{MatrixFactorizationModel, Rating}
+import org.apache.spark.mllib.recommendation2.{MatrixFactorizationModel, Rating}
 import org.apache.spark.rdd.RDD
 
 /**

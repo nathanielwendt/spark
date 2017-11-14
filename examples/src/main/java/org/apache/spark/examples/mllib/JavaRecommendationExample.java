@@ -21,9 +21,9 @@ package org.apache.spark.examples.mllib;
 import scala.Tuple2;
 
 import org.apache.spark.api.java.*;
-import org.apache.spark.mllib.recommendation.ALS;
-import org.apache.spark.mllib.recommendation.MatrixFactorizationModel;
-import org.apache.spark.mllib.recommendation.Rating;
+import org.apache.spark.mllib.recommendation2.ALS;
+import org.apache.spark.mllib.recommendation2.MatrixFactorizationModel;
+import org.apache.spark.mllib.recommendation2.Rating;
 import org.apache.spark.SparkConf;
 // $example off$
 

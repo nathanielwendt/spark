@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.mllib.recommendation
+package org.apache.spark.mllib.recommendation2
 
 import scala.collection.JavaConverters._
 import scala.math.abs

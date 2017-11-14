@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-package org.apache.spark.mllib.recommendation
+package org.apache.spark.mllib.recommendation2
 
 import org.apache.spark.annotation.{DeveloperApi, Since}
 import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.internal.Logging
-import org.apache.spark.ml.recommendation.{ALS => NewALS}
+import org.apache.spark.ml.recommendationml2.{ALS => NewALS}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
 
@@ -83,7 +83,7 @@ class ALS private (
   def this() = this(-1, -1, 10, 10, 0.01, false, 1.0)
 
   /** If true, do alternating nonnegative least squares. */
-  private var nonnegative = false
+  private var nonnegative = true
 
   /** storage level for user/product in/out links */
   private var intermediateRDDStorageLevel: StorageLevel = StorageLevel.MEMORY_AND_DISK
@@ -445,6 +445,16 @@ object ALS {
   def trainImplicit(ratings: RDD[Rating], rank: Int, iterations: Int, lambda: Double, alpha: Double)
     : MatrixFactorizationModel = {
     trainImplicit(ratings, rank, iterations, lambda, -1, alpha)
+  }
+
+  def trainImplicitCustom(ratings: RDD[Rating],
+    rank: Int, iterations: Int, lambda: Double, alpha: Double, cpInterval: Int)
+  : MatrixFactorizationModel = {
+    println("custom CGD here")
+    val als = new ALS(-1, -1, rank, iterations, lambda, true, alpha)
+    als.setCheckpointInterval(cpInterval)
+    als.run(ratings)
+    // trainImplicit(ratings, rank, iterations, lambda, -1, alpha)
   }
 
   /**

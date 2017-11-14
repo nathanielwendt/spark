@@ -20,7 +20,7 @@ package org.apache.spark.examples.ml
 
 // $example on$
 import org.apache.spark.ml.evaluation.RegressionEvaluator
-import org.apache.spark.ml.recommendation.ALS
+import org.apache.spark.ml.recommendationml2.ALS
 // $example off$
 import org.apache.spark.sql.SparkSession
 

@@ -20,9 +20,9 @@ package org.apache.spark.examples.mllib
 
 import org.apache.spark.{SparkConf, SparkContext}
 // $example on$
-import org.apache.spark.mllib.recommendation.ALS
-import org.apache.spark.mllib.recommendation.MatrixFactorizationModel
-import org.apache.spark.mllib.recommendation.Rating
+import org.apache.spark.mllib.recommendation2.ALS
+import org.apache.spark.mllib.recommendation2.MatrixFactorizationModel
+import org.apache.spark.mllib.recommendation2.Rating
 // $example off$
 
 object RecommendationExample {

@@ -22,7 +22,7 @@ import org.json4s._
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 
-import org.apache.spark.ml.recommendation.{ALS, ALSModel}
+import org.apache.spark.ml.recommendationml2.{ALS, ALSModel}
 import org.apache.spark.ml.util._
 import org.apache.spark.sql.{DataFrame, Dataset}
 

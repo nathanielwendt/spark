@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.ml.recommendation
+package org.apache.spark.ml.recommendationml2
 
 import breeze.linalg.*
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
@@ -52,7 +52,7 @@ import scala.util.{Sorting, Try}
 /**
  * Common params for ALS and ALSModel.
  */
-private[recommendation] trait ALSModelParams extends Params with HasPredictionCol {
+private[recommendationml2] trait ALSModelParams extends Params with HasPredictionCol {
   /**
    * Param for the column name for user ids. Ids must be integers. Other
    * numeric types are supported for this column, but will be cast to integers as long as they
@@ -83,7 +83,7 @@ private[recommendation] trait ALSModelParams extends Params with HasPredictionCo
    * Attempts to safely cast a user/item id to an Int. Throws an exception if the value is
    * out of integer range or contains a fractional part.
    */
-  protected[recommendation] val checkedCast = udf { (n: Any) =>
+  protected[recommendationml2] val checkedCast = udf { (n: Any) =>
     n match {
       case v: Int => v // Avoid unnecessary casting
       case v: Number =>
@@ -128,7 +128,7 @@ private[recommendation] trait ALSModelParams extends Params with HasPredictionCo
 /**
  * Common params for ALS.
  */
-private[recommendation] trait ALSParams extends ALSModelParams with HasMaxIter with HasRegParam
+private[recommendationml2] trait ALSParams extends ALSModelParams with HasMaxIter with HasRegParam
   with HasPredictionCol with HasCheckpointInterval with HasSeed {
 
   /**
@@ -367,7 +367,7 @@ class ALSModel private[ml] (
    * It then computes the global top-k by aggregating the per block top-k elements with
    * a [[TopByKeyAggregator]]. This significantly reduces the size of intermediate and shuffle data.
    * This is the DataFrame equivalent to the approach used in
-   * [[org.apache.spark.mllib.recommendation.MatrixFactorizationModel]].
+   * [[org.apache.spark.mllib.recommendation2.MatrixFactorizationModel]].
    *
    * @param srcFactors src factors for which to generate recommendations
    * @param dstFactors dst factors used to make recommendations
@@ -440,7 +440,7 @@ object ALSModel extends MLReadable[ALSModel] {
 
   private val NaN = "nan"
   private val Drop = "drop"
-  private[recommendation] final val supportedColdStartStrategies = Array(NaN, Drop)
+  private[recommendationml2] final val supportedColdStartStrategies = Array(NaN, Drop)
 
   @Since("1.6.0")
   override def read: MLReader[ALSModel] = new ALSModelReader
@@ -515,7 +515,7 @@ object ALSModel extends MLReadable[ALSModel] {
 class ALS(@Since("1.4.0") override val uid: String) extends Estimator[ALSModel] with ALSParams
   with DefaultParamsWritable {
 
-  import org.apache.spark.ml.recommendation.ALS.Rating
+  import org.apache.spark.ml.recommendationml2.ALS.Rating
 
   @Since("1.4.0")
   def this() = this(Identifiable.randomUID("als"))
@@ -664,13 +664,13 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
   override def load(path: String): ALS = super.load(path)
 
   /** Trait for least squares solvers applied to the normal equation. */
-  private[recommendation] trait LeastSquaresNESolver extends Serializable {
+  private[recommendationml2] trait LeastSquaresNESolver extends Serializable {
     /** Solves a least squares problem with regularization (possibly with other constraints). */
     def solve(ne: NormalEquation, lambda: Double): Array[Float]
   }
 
   /** Cholesky solver for least square problems. */
-  private[recommendation] class CholeskySolver extends LeastSquaresNESolver {
+  private[recommendationml2] class CholeskySolver extends LeastSquaresNESolver {
 
     /**
      * Solves a least squares problem with L2 regularization:
@@ -704,7 +704,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
   }
 
   /** NNLS solver. */
-  private[recommendation] class NNLSSolver extends LeastSquaresNESolver {
+  private[recommendationml2] class NNLSSolver extends LeastSquaresNESolver {
     private var rank: Int = -1
     private var workspace: NNLS.Workspace = _
     private var ata: Array[Double] = _
@@ -772,7 +772,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
    *
    * \sum,,i,, c,,i,, a,,i,, a,,i,,^T^ x - b,,i,, a,,i,, + lambda * x = 0.
    */
-  private[recommendation] class NormalEquation(val k: Int) extends Serializable {
+  private[recommendationml2] class NormalEquation(val k: Int) extends Serializable {
 
     /** Number of entries in the upper triangular part of a k-by-k matrix. */
     val triK = k * (k + 1) / 2
@@ -865,11 +865,13 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
     val seedGen = new XORShiftRandom(seed)
     var userFactors = initialize(userInBlocks, rank, seedGen.nextLong())
     var itemFactors = initialize(itemInBlocks, rank, seedGen.nextLong())
-    var previousCheckpointFile: Option[String] = None
+    var previousItemCheckpointFile: Option[String] = None
+    var previousUserCheckpointFile: Option[String] = None
     val shouldCheckpoint: Int => Boolean = (iter) =>
       sc.checkpointDir.isDefined && checkpointInterval != -1 && (iter % checkpointInterval == 0)
-    val deletePreviousCheckpointFile: () => Unit = () =>
-      previousCheckpointFile.foreach { file =>
+
+    def deletePreviousCheckpointFile(cpFile: Option[String]): Unit = {
+      cpFile.foreach { file =>
         try {
           val checkpointFile = new Path(file)
           checkpointFile.getFileSystem(sc.hadoopConfiguration).delete(checkpointFile, true)
@@ -878,6 +880,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
             logWarning(s"Cannot delete checkpoint file $file:", e)
         }
       }
+    }
 
     println("Inside custom build Spark")
 
@@ -886,13 +889,17 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
         userFactors.setName(s"userFactors-$iter").persist(intermediateRDDStorageLevel)
         val previousItemFactors = itemFactors
 
-        println("Inside implicit prefs")
-        //println(s"iteration #$iter")
+        println(s"iter #$iter")
 
-        itemFactors = computeFactorsCG(userFactors, previousItemFactors, userInBlocks,
+        itemFactors = computeFactorsCG(userFactors, itemFactors, userInBlocks,
           userOutBlocks, itemInBlocks, itemOutBlocks, rank, regParam,
-          userLocalIndexEncoder, implicitPrefs, alpha, solver)
-        //itemFactors.collect().foreach(_._2.foreach(arr => println(arr.mkString(","))))
+          userLocalIndexEncoder, implicitPrefs, alpha)
+        // itemFactors.collect().foreach(_._2.foreach(arr => println(arr.mkString(","))))
+
+
+//        itemFactors = computeFactors(userFactors, userOutBlocks,
+//          itemInBlocks, rank, regParam,
+//          userLocalIndexEncoder, implicitPrefs, alpha, solver)
 
         previousItemFactors.unpersist()
         itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
@@ -903,17 +910,23 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
         }
         val previousUserFactors = userFactors
 
-        //println("****")
-
-        userFactors = computeFactorsCG(itemFactors, previousUserFactors, itemInBlocks,
+        userFactors = computeFactorsCG(itemFactors, userFactors, itemInBlocks,
           itemOutBlocks, userInBlocks, userOutBlocks, rank, regParam,
-          itemLocalIndexEncoder, implicitPrefs, alpha, solver)
-        //userFactors.collect().foreach(_._2.foreach(arr => println(arr.mkString(","))))
+          itemLocalIndexEncoder, implicitPrefs, alpha)
+
+        // userFactors.collect().foreach(_._2.foreach(arr => println(arr.mkString(","))))
+
+//        userFactors = computeFactors(itemFactors, itemOutBlocks,
+//          userInBlocks, rank, regParam,
+//          itemLocalIndexEncoder, implicitPrefs, alpha, solver)
 
         if (shouldCheckpoint(iter)) {
+          userFactors.checkpoint()
           ALS.cleanShuffleDependencies(sc, deps)
-          deletePreviousCheckpointFile()
-          previousCheckpointFile = itemFactors.getCheckpointFile
+          deletePreviousCheckpointFile(previousItemCheckpointFile)
+          previousItemCheckpointFile = itemFactors.getCheckpointFile
+          deletePreviousCheckpointFile(previousUserCheckpointFile)
+          previousUserCheckpointFile = userFactors.getCheckpointFile
         }
         previousUserFactors.unpersist()
 
@@ -928,8 +941,8 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
           itemFactors.checkpoint()
           itemFactors.count() // checkpoint item factors and cut lineage
           ALS.cleanShuffleDependencies(sc, deps)
-          deletePreviousCheckpointFile()
-          previousCheckpointFile = itemFactors.getCheckpointFile
+          //deletePreviousItemCheckpointFile()
+          previousItemCheckpointFile = itemFactors.getCheckpointFile
         }
         userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
           itemLocalIndexEncoder, solver = solver)
@@ -1004,7 +1017,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
    * @param ratings ratings
    * @see [[LocalIndexEncoder]]
    */
-  private[recommendation] case class InBlock[@specialized(Int, Long) ID: ClassTag](
+  private[recommendationml2] case class InBlock[@specialized(Int, Long) ID: ClassTag](
       srcIds: Array[ID],
       dstPtrs: Array[Int],
       dstEncodedIndices: Array[Int],
@@ -1046,7 +1059,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
   /**
    * A rating block that contains src IDs, dst IDs, and ratings, stored in primitive arrays.
    */
-  private[recommendation] case class RatingBlock[@specialized(Int, Long) ID: ClassTag](
+  private[recommendationml2] case class RatingBlock[@specialized(Int, Long) ID: ClassTag](
       srcIds: Array[ID],
       dstIds: Array[ID],
       ratings: Array[Float]) {
@@ -1059,7 +1072,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
   /**
    * Builder for [[RatingBlock]]. `mutable.ArrayBuilder` is used to avoid boxing/unboxing.
    */
-  private[recommendation] class RatingBlockBuilder[@specialized(Int, Long) ID: ClassTag]
+  private[recommendationml2] class RatingBlockBuilder[@specialized(Int, Long) ID: ClassTag]
     extends Serializable {
 
     private val srcIds = mutable.ArrayBuilder.make[ID]
@@ -1148,7 +1161,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
    *
    * @param encoder encoder for dst indices
    */
-  private[recommendation] class UncompressedInBlockBuilder[@specialized(Int, Long) ID: ClassTag](
+  private[recommendationml2] class UncompressedInBlockBuilder[@specialized(Int, Long) ID: ClassTag](
       encoder: LocalIndexEncoder)(
       implicit ord: Ordering[ID]) {
 
@@ -1191,7 +1204,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
   /**
    * A block of (srcId, dstEncodedIndex, rating) tuples stored in primitive arrays.
    */
-  private[recommendation] class UncompressedInBlock[@specialized(Int, Long) ID: ClassTag](
+  private[recommendationml2] class UncompressedInBlock[@specialized(Int, Long) ID: ClassTag](
       val srcIds: Array[ID],
       val dstEncodedIndices: Array[Int],
       val ratings: Array[Float])(
@@ -1422,8 +1435,8 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
   }
 
   import breeze.linalg.{DenseVector => BDV, DenseMatrix => BDM, _}
+  import breeze.linalg.DenseVector.fill
   import breeze.numerics._
-
 
   // scalastyle:off
   def computeFactorsCG[ID: ClassTag](
@@ -1437,15 +1450,10 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
     regParam: Double,
     srcEncoder: LocalIndexEncoder,
     implicitPrefs: Boolean = false,
-    alpha: Double = 1.0,
-    solver: LeastSquaresNESolver)(
+    alpha: Double = 1.0)(
     implicit ord: Ordering[ID]): RDD[(Int, FactorBlock)] = {
 
     val numSrcBlocks = srcFactorBlocks.partitions.length
-
-    //val YtY = if (implicitPrefs) Some(computeYtY(srcFactorBlocks, rank)) else None
-
-    import org.apache.spark.SparkContext._
 
 //
 //    val thisthing = srcInBlocks.mapValues(_.srcIds)
@@ -1520,20 +1528,19 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
 //      return 2.0
 //    }
 
-    val vecs = srcInBlocks.mapValues(_.srcIds).join(srcFactorBlocks)
-      .mapPartitions({
-        items => items.flatMap { case (_, (ids, fact)) => fact }
-      })
+//    val gatheredFactors = srcInBlocks.mapValues(_.srcIds).join(srcFactorBlocks)
+//      .mapPartitions({ items =>
+//        items.flatMap { case (_, (ids, factors)) =>
+//          ids.view.zip(factors)
+//        }
+//      }).values.collect()
 
-//    val vecs = tmp.map({
-//      case (id, factorarr) => factorarr
-//    })
+    val gatheredFactors = srcFactorBlocks.values.collect().flatten
 
-    val factors = vecs.collect()
-    println(s"Inside custom CGD approach: ${factors.length}")
-    val Y = new BDM(factors.length, rank, factors.flatten)
+    val Y = new BDM(gatheredFactors.length, rank, gatheredFactors.flatten)
+
     val Yt = Y.t
-    val YtY = Yt * Y
+    val YtY = (Yt * Y) + (regParam.toFloat * breeze.linalg.DenseMatrix.eye[Float](rank))
 
     val srcOut = srcOutBlocks.join(srcFactorBlocks).flatMap {
       case (srcBlockId, (srcOutBlock, srcFactors)) =>
@@ -1547,25 +1554,10 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
     dstInBlocks.join(merged).join(dstFactorBlocks).mapValues {
       case ((InBlock(dstIds, srcPtrs, srcEncodedIndices, ratings), srcFactors), relDstFactors) =>
 
-        // need dstFactors
-//        val sortedDstFactors = new Array[FactorBlock](numSrcBlocks)
-//        relDstFactors.foreach { case (srcBlockId, factors) =>
-//          sortedDstFactors(srcBlockId) = factors
-//        }
-
-        if(dstIds.length != relDstFactors.length){
-          throw new RuntimeException("lekjflekf arggggg.")
-        }
-
         val sortedSrcFactors = new Array[FactorBlock](numSrcBlocks)
         srcFactors.foreach { case (srcBlockId, factors) =>
           sortedSrcFactors(srcBlockId) = factors
         }
-
-        val m = BDM((7154022.0F, -1357958.9F), (-1357958.9F, 1.5335017E7F))
-        val x2 = BDV(8.728524F, 8.021072F)
-
-        val otheres = m.map(_* -1.0F) * x2
 
         val dstFactors = new Array[Array[Float]](dstIds.length)
 
@@ -1573,8 +1565,6 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
         while (j < dstIds.length) {
 
           val x = new BDV(relDstFactors(j))
-
-          val tmp = YtY.map(_* -1.0F)
 
           var r: BDV[Float] = YtY.map(_* -1.0F) * x
 
@@ -1587,29 +1577,17 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
             val rating = ratings(i)
             val confidence: Float = 1.0F + regParam.toFloat * rating
             val srcFactorVec = BDV(srcFactor)
-            r += (confidence - (confidence - 1) * (srcFactorVec.dot(x))) * srcFactorVec
-            if(r.exists(v => v.toDouble.isNaN)){
-              throw new RuntimeException("argg nan")
-            }
+            r += (confidence - (confidence - 1.0F) * (srcFactorVec dot x)) * srcFactorVec
             i += 1
           }
 
           var p : BDV[Float] = r.copy
           var rsold: Float = r dot r
-
-          if(rsold.toDouble.isNaN){
-            throw new RuntimeException("arggg rsold")
-          }
-
           var rsnew: Float = 0.0F
 
-          var srcFactorVec: BDV[Float] = new BDV(x.length)
           for (it <- 1 to 3) {
 
             var Ap: BDV[Float] = YtY * p
-            if(Ap.exists(v => v.toDouble.isNaN)){
-              throw new RuntimeException("Ap arggg")
-            }
 
             i = srcPtrs(j)
             while (i < srcPtrs(j + 1)) {
@@ -1619,13 +1597,8 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
               val srcFactor = sortedSrcFactors(blockId)(localIndex)
               val rating = ratings(i)
               val confidence: Float = 1.0F + regParam.toFloat * rating
-              srcFactorVec = BDV(srcFactor)
-              Ap += (confidence - 1) * (srcFactorVec dot p) * srcFactorVec
-
-              if(Ap.exists(v => v.toDouble.isNaN)){
-                throw new RuntimeException("Ap arggg")
-              }
-
+              val srcFactorVec = BDV(srcFactor)
+              Ap += (confidence - 1.0F) * (srcFactorVec dot p) * srcFactorVec
               i += 1
             }
 
@@ -1635,9 +1608,10 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
             rsnew = r dot r
             p = r + (rsnew / rsold) * p
             rsold = rsnew
-
           }
-          dstFactors(j) = srcFactorVec.toArray
+          //val rr = new scala.util.Random()
+          //dstFactors(j) = Array.fill(rank)(rr.nextInt())
+          dstFactors(j) = x.toArray
           j += 1
         }
         dstFactors
@@ -1746,7 +1720,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
    *
    * @param numBlocks number of blocks
    */
-  private[recommendation] class LocalIndexEncoder(numBlocks: Int) extends Serializable {
+  private[recommendationml2] class LocalIndexEncoder(numBlocks: Int) extends Serializable {
 
     require(numBlocks > 0, s"numBlocks must be positive but found $numBlocks.")
 
@@ -1779,7 +1753,7 @@ object ALS extends DefaultParamsReadable[ALS] with Logging {
    * we have getPartition(getPartition(k)) = getPartition(k). Since the default HashPartitioner
    * satisfies this requirement, we simply use a type alias here.
    */
-  private[recommendation] type ALSPartitioner = org.apache.spark.HashPartitioner
+  private[recommendationml2] type ALSPartitioner = org.apache.spark.HashPartitioner
 
   /**
    * Private function to clean up all of the shuffles files from the dependencies and their parents.

@@ -39,7 +39,7 @@ import org.apache.spark.mllib.linalg._
 import org.apache.spark.mllib.linalg.distributed._
 import org.apache.spark.mllib.optimization._
 import org.apache.spark.mllib.random.{RandomRDDs => RG}
-import org.apache.spark.mllib.recommendation._
+import org.apache.spark.mllib.recommendation2._
 import org.apache.spark.mllib.regression._
 import org.apache.spark.mllib.stat.{KernelDensity, MultivariateStatisticalSummary, Statistics}
 import org.apache.spark.mllib.stat.correlation.CorrelationNames

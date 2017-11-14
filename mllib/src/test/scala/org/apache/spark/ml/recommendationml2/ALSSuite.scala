@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.ml.recommendation
+package org.apache.spark.ml.recommendationml2
 
 import java.io.File
 import java.util.Random
@@ -33,11 +33,11 @@ import org.apache.commons.io.filefilter.TrueFileFilter
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.ml.linalg.Vectors
-import org.apache.spark.ml.recommendation.ALS._
-import org.apache.spark.ml.recommendation.ALS.Rating
+import org.apache.spark.ml.recommendationml2.ALS._
+import org.apache.spark.ml.recommendationml2.ALS.Rating
 import org.apache.spark.ml.util.{DefaultReadWriteTest, MLTestingUtils}
 import org.apache.spark.ml.util.TestingUtils._
-import org.apache.spark.mllib.recommendation.MatrixFactorizationModelSuite
+import org.apache.spark.mllib.recommendation2.MatrixFactorizationModelSuite
 import org.apache.spark.mllib.util.MLlibTestSparkContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerStageCompleted}
@@ -406,9 +406,11 @@ class ALSSuite
     val als = new ALS()
       .setRank(rank)
       .setRegParam(regParam)
+        .setMaxIter(maxIter)
       .setImplicitPrefs(implicitPrefs)
       .setNumUserBlocks(numUserBlocks)
       .setNumItemBlocks(numItemBlocks)
+        .setCheckpointInterval(2)
       .setSeed(0)
     val alpha = als.getAlpha
     val model = als.fit(training.toDF())
@@ -481,7 +483,6 @@ class ALSSuite
   }
 
   test("more blocks than ratings") {
-    println("not here")
     val (training, test) =
       genExplicitTestData(numUsers = 4, numItems = 4, rank = 1)
     testALS(training, test, maxIter = 2, rank = 1, regParam = 1e-4, targetRMSE = 0.002,
@@ -489,10 +490,9 @@ class ALSSuite
   }
 
   test("implicit feedback") {
-    println("here")
     val (training, test) =
-      genImplicitTestData(numUsers = 20, numItems = 40, rank = 2, noiseStd = 0.01)
-    testALS(training, test, maxIter = 4, rank = 2, regParam = 0.01, implicitPrefs = true,
+      genImplicitTestData(numUsers = 20, numItems = 40, rank = 6, noiseStd = 0.01)
+    testALS(training, test, maxIter = 30, rank = 6, regParam = 0.01, implicitPrefs = true,
       targetRMSE = 0.3)
   }
 
@@ -1030,8 +1030,11 @@ object ALSSuite extends Logging {
         if (x < totalFraction) {
           if (x < trainingFraction) {
             val noise = noiseStd * random.nextGaussian()
+            //training += Rating(userId, itemId,
+            //  ((Math.abs(rating) + noise.toFloat) * 10).toInt.toFloat)
             training += Rating(userId, itemId, rating + noise.toFloat)
           } else {
+            //test += Rating(userId, itemId, (Math.abs(rating) * 10).toInt.toFloat)
             test += Rating(userId, itemId, rating)
           }
         }
